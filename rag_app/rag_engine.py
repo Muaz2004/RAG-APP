@@ -1,27 +1,27 @@
+# views.py
 import os
 import pickle
 import PyPDF2
-import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+from threading import Thread
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.core.files.storage import default_storage
 
-
-# CONFIG
-
-PDF_PATH = "test_docs/sample.pdf"
-
+# ---------------- CONFIG ----------------
 VECTOR_DIR = "vector_db"
 INDEX_PATH = os.path.join(VECTOR_DIR, "faiss.index")
 CHUNKS_PATH = os.path.join(VECTOR_DIR, "chunks.pkl")
-
 CHUNK_SIZE = 500
 OVERLAP = 100
 TOP_K = 3
 
+# ---------------- GLOBAL MODEL ----------------
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
-# LOAD PDF
-
+# ---------------- PDF FUNCTIONS ----------------
 def load_pdf_text(pdf_path):
     text = ""
     with open(pdf_path, "rb") as file:
@@ -33,40 +33,27 @@ def load_pdf_text(pdf_path):
     return text
 
 
-
-# CHUNK TEXT
-def chunk_text(text, chunk_size=500, overlap=100):
+def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=OVERLAP):
     chunks = []
     start = 0
-
     while start < len(text):
         end = start + chunk_size
         chunks.append(text[start:end])
         start = end - overlap
-
     return chunks
 
 
-
-# EMBEDDING MODEL
-def load_embedding_model():
-    return SentenceTransformer("all-MiniLM-L6-v2")
-
-
-
-# INDEX DOCUMENT (PERSISTENT)
-
+# ---------------- INDEXING ----------------
 def index_document(pdf_path):
-    print("Loading PDF...")
+    print("Loading PDF for indexing...")
     text = load_pdf_text(pdf_path)
 
     print("Chunking text...")
     chunks = chunk_text(text)
     print(f"Total chunks: {len(chunks)}")
 
-    model = load_embedding_model()
     print("Creating embeddings...")
-    embeddings = model.encode(chunks).astype("float32")
+    embeddings = embedding_model.encode(chunks, batch_size=32).astype("float32")
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
@@ -78,10 +65,8 @@ def index_document(pdf_path):
     with open(CHUNKS_PATH, "wb") as f:
         pickle.dump(chunks, f)
 
-    print("FAISS index and chunks saved to disk.")
+    print("FAISS index and chunks saved.")
 
-
-# LOAD INDEX
 
 def load_index():
     index = faiss.read_index(INDEX_PATH)
@@ -90,32 +75,49 @@ def load_index():
     return index, chunks
 
 
-
-# RETRIEVAL
-
-def retrieve(query, top_k=3):
-    model = load_embedding_model()
+def retrieve(query, top_k=TOP_K):
     index, chunks = load_index()
-
-    query_embedding = model.encode([query]).astype("float32")
+    query_embedding = embedding_model.encode([query]).astype("float32")
     distances, indices = index.search(query_embedding, top_k)
-
     return [chunks[i] for i in indices[0]]
 
 
+def async_index(pdf_path):
+    thread = Thread(target=index_document, args=(pdf_path,))
+    thread.start()
+    return thread
 
-# MAIN (TEST)
 
-if __name__ == "__main__":
+# ---------------- DJANGO VIEW ----------------
+@csrf_exempt
+def upload_pdf(request):
+    if request.method == "POST" and request.FILES.get("pdf"):
+        pdf_file = request.FILES["pdf"]
+        saved_path = default_storage.save(f"uploads/{pdf_file.name}", pdf_file)
 
-    if not os.path.exists(INDEX_PATH):
-        index_document(PDF_PATH)
+        # Start indexing in background
+        async_index(saved_path)
 
-    print("\n--- QUERY TEST ---\n")
+        return JsonResponse({"status": "Upload received. Indexing in progress."})
 
-    question = "What does the company do?"
-    results = retrieve(question, TOP_K)
+    return JsonResponse({"error": "No PDF uploaded"}, status=400)
 
-    for i, chunk in enumerate(results, 1):
-        print(f"\n--- Result {i} ---")
-        print(chunk)
+
+@csrf_exempt
+def query_view(request):
+    if request.method == "POST":
+        import json
+        data = json.loads(request.body)
+        question = data.get("question", "")
+        if not question:
+            return JsonResponse({"error": "No question provided"}, status=400)
+
+        # Retrieve top chunks
+        try:
+            results = retrieve(question)
+        except Exception:
+            return JsonResponse({"error": "No index found yet. Upload a PDF first."}, status=400)
+
+        return JsonResponse({"results": results})
+
+    return JsonResponse({"error": "Invalid request"}, status=400)
