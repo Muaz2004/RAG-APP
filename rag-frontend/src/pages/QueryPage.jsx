@@ -1,74 +1,55 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { queryRAG } from "../services/ragApi";
-import ResultList from "../components/ResultList";
 
-function QueryPage() {
+export default function QuerySection() {
   const [question, setQuestion] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [chunks, setChunks] = useState([]);
+  const [chatHistory, setChatHistory] = useState([]);
   const [loading, setLoading] = useState(false);
 
   const handleAsk = async () => {
-    if (!question) return;
+    if (!question.trim()) return;
 
+    // Add user question to chat
+    const newChat = [...chatHistory, { type: "user", text: question }];
+    setChatHistory(newChat);
+    setQuestion("");
     setLoading(true);
+
     try {
       const res = await queryRAG(question);
-      console.log("Query response:", res);
-
-      setAnswer(res.answer || "No answer found");
-      setChunks(res.chunks || []);
-    } catch (err) {
-      console.error("Query error:", err);
-      setAnswer("Error fetching answer");
-      setChunks([]);
+      // Add AI answer
+      setChatHistory([...newChat, { type: "ai", text: res.answer }]);
+    } catch {
+      setChatHistory([...newChat, { type: "ai", text: "Failed to fetch response." }]);
     }
+
     setLoading(false);
   };
 
   return (
-    <div style={{ padding: 20, maxWidth: 700, margin: "auto", display: "flex", flexDirection: "column", gap: 15 }}>
-      <h2>Ask a Question</h2>
+    <div className="chat-container">
+      <div className="chat-history">
+        {chatHistory.map((msg, index) => (
+          <div
+            key={index}
+            className={`chat-bubble ${msg.type === "user" ? "user" : "ai"}`}
+          >
+            {msg.text}
+          </div>
+        ))}
+        {loading && <div className="chat-bubble ai">...</div>}
+      </div>
 
-      <input
-        type="text"
-        value={question}
-        onChange={(e) => setQuestion(e.target.value)}
-        placeholder="Type your question here..."
-        style={{ padding: 8, width: "100%", borderRadius: 5, border: "1px solid #ccc" }}
-      />
-
-      <button
-        onClick={handleAsk}
-        disabled={loading}
-        style={{
-          padding: "10px 15px",
-          backgroundColor: "#4CAF50",
-          color: "white",
-          border: "none",
-          cursor: "pointer",
-          borderRadius: 5,
-          width: 100
-        }}
-      >
-        {loading ? "Fetching..." : "Ask"}
-      </button>
-
-      {answer && (
-        <div style={{ marginTop: 20 }}>
-          <h3>Answer:</h3>
-          <p>{answer}</p>
-        </div>
-      )}
-
-      {chunks.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <h4>Source Chunks:</h4>
-          <ResultList results={chunks} />
-        </div>
-      )}
+      <div className="chat-input">
+        <input
+          type="text"
+          placeholder="Type your question..."
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleAsk()}
+        />
+        <button onClick={handleAsk}>Ask</button>
+      </div>
     </div>
   );
 }
-
-export default QueryPage;

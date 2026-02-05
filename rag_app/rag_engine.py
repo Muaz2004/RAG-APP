@@ -44,28 +44,47 @@ def chunk_text(text, chunk_size=CHUNK_SIZE, overlap=OVERLAP):
 
 
 # ---------------- INDEXING ----------------
+
 def index_document(pdf_path):
     print("Loading PDF for indexing...")
     text = load_pdf_text(pdf_path)
 
     print("Chunking text...")
-    chunks = chunk_text(text)
-    print(f"Total chunks: {len(chunks)}")
+    new_chunks = chunk_text(text)
+    print(f"New chunks: {len(new_chunks)}")
 
     print("Creating embeddings...")
-    embeddings = embedding_model.encode(chunks, batch_size=32).astype("float32")
-
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
+    new_embeddings = embedding_model.encode(
+        new_chunks, batch_size=32
+    ).astype("float32")
 
     os.makedirs(VECTOR_DIR, exist_ok=True)
 
+    # ---------------- LOAD OR CREATE INDEX ----------------
+    if os.path.exists(INDEX_PATH) and os.path.exists(CHUNKS_PATH):
+        print("Existing index found. Appending data...")
+
+        index = faiss.read_index(INDEX_PATH)
+
+        with open(CHUNKS_PATH, "rb") as f:
+            all_chunks = pickle.load(f)
+
+    else:
+        print("No index found. Creating new one...")
+        dim = new_embeddings.shape[1]
+        index = faiss.IndexFlatL2(dim)
+        all_chunks = []
+
+    # ---------------- APPEND DATA ----------------
+    index.add(new_embeddings)
+    all_chunks.extend(new_chunks)
+
+    # ---------------- SAVE BACK ----------------
     faiss.write_index(index, INDEX_PATH)
     with open(CHUNKS_PATH, "wb") as f:
-        pickle.dump(chunks, f)
+        pickle.dump(all_chunks, f)
 
-    print("FAISS index and chunks saved.")
+    print(f"Index now contains {len(all_chunks)} total chunks.")
 
 
 def load_index():
